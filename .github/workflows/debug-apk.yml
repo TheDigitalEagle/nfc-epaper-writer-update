@@ -4,9 +4,11 @@ on:
   workflow_dispatch:
   push:
     branches: [ main, dev ]
+  release:
+    types: [ published ]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -38,3 +40,9 @@ jobs:
           name: debug-apk
           path: dist/*.apk
           if-no-files-found: error
+
+      - name: Upload debug APK to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk

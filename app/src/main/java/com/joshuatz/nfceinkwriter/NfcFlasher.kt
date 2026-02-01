@@ -11,6 +11,7 @@ import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.NfcA
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PatternMatcher
@@ -120,7 +121,9 @@ class NfcFlasher : AppCompatActivity() {
         val nfcIntent = Intent(this, javaClass).apply {
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        this.mPendingIntent = PendingIntent.getActivity(this, 0, intent, 0)
+        val mutableFlag = if (Build.VERSION.SDK_INT >= 31) 0x02000000 else 0
+        val pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or mutableFlag
+        this.mPendingIntent = PendingIntent.getActivity(this, 0, nfcIntent, pendingIntentFlags)
         // Set up the filters
         var ndefIntentFilter: IntentFilter = IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED)
         try {
@@ -144,7 +147,11 @@ class NfcFlasher : AppCompatActivity() {
         } catch (e: IntentFilter.MalformedMimeTypeException) {
             Log.e("mimeTypeException", "Invalid / Malformed mimeType")
         }
-        mNfcIntentFilters = arrayOf(ndefIntentFilter)
+        mNfcIntentFilters = arrayOf(
+            ndefIntentFilter,
+            IntentFilter(NfcAdapter.ACTION_TAG_DISCOVERED),
+            IntentFilter(NfcAdapter.ACTION_TECH_DISCOVERED)
+        )
 
         // Init NFC adapter
         mNfcAdapter = NfcAdapter.getDefaultAdapter(this)
@@ -177,29 +184,34 @@ class NfcFlasher : AppCompatActivity() {
 
         if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED || intent.action == NfcAdapter.ACTION_TAG_DISCOVERED || intent.action == NfcAdapter.ACTION_TECH_DISCOVERED) {
             val detectedTag: Tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)!!
-            val tagId = String(detectedTag.id, StandardCharsets.US_ASCII)
+            val tagIdAscii = String(detectedTag.id, StandardCharsets.US_ASCII)
+            val tagIdHex = detectedTag.id.joinToString("") { b ->
+                "%02X".format(b.toInt() and 0xFF)
+            }
             val tagTechList = detectedTag.techList
 
             // Do we still have a bitmap to flash?
             val bitmap = this.mBitmap
             if (bitmap == null) {
                 Log.v("Missing bitmap", "mBitmap = null")
+                Toast.makeText(this, "Missing bitmap to flash.", Toast.LENGTH_SHORT).show()
                 return
             }
 
             // Check for correct NFC type support
-            if (tagTechList[0] != "android.nfc.tech.NfcA") {
+            if (!tagTechList.contains(NfcA::class.java.name)) {
                 Log.v("Invalid tag type. Found:", tagTechList.toString())
+                Toast.makeText(this, "Unsupported NFC tag tech.", Toast.LENGTH_SHORT).show()
                 return
             }
 
             // Do an explicit check for the ID. You may need to add the correct ID for your tag model.
-            if (tagId !in WaveShareUIDs) {
-                Log.v("Invalid tag ID", "$tagId not in " + WaveShareUIDs.joinToString(", "))
+            if (tagIdAscii !in WaveShareUIDs) {
+                Log.v("Invalid tag ID", "$tagIdAscii / $tagIdHex not in " + WaveShareUIDs.joinToString(", "))
                 // Currently, this ID is sometimes coming back corrupted, so it is a unreliable check
                 // only enforce check if type != ndef, because in those cases we can't check AAR
                 if (intent.action != NfcAdapter.ACTION_NDEF_DISCOVERED) {
-                    return
+                    Toast.makeText(this, "Unrecognized tag; attempting flash anyway.", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -224,6 +236,7 @@ class NfcFlasher : AppCompatActivity() {
 
                 if (!aarFound) {
                     Log.v("Bad NDEFs:", "records found, but missing AAR")
+                    Toast.makeText(this, "NDEF found, but missing AAR.", Toast.LENGTH_SHORT).show()
                 }
             }
 
