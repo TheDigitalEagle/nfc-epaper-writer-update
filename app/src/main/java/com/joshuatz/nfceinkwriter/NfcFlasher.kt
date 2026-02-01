@@ -16,10 +16,13 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PatternMatcher
 import android.os.SystemClock
+import android.text.format.DateFormat
 import android.util.Log
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.lifecycle.lifecycleScope
@@ -53,6 +56,8 @@ class NfcFlasher : AppCompatActivity() {
     private var mProgressVal: Int = 0
     private var mBitmap: Bitmap? = null
     private var mWhileFlashingArea: ConstraintLayout? = null
+    private val mLogBuffer: ArrayDeque<String> = ArrayDeque(200)
+    private val mMaxLogLines = 200
     private var mImgFilePath: String? = null
     private var mImgFileUri: Uri? = null
 
@@ -113,6 +118,8 @@ class NfcFlasher : AppCompatActivity() {
 
         mWhileFlashingArea  = findViewById(R.id.whileFlashingArea)
         mProgressBar = findViewById(R.id.nfcFlashProgressbar)
+        val viewLogsButton: Button = findViewById(R.id.viewLogsButton)
+        viewLogsButton.setOnClickListener { showLogsDialog() }
 
         val originatingIntent = intent
 
@@ -189,25 +196,26 @@ class NfcFlasher : AppCompatActivity() {
                 "%02X".format(b.toInt() and 0xFF)
             }
             val tagTechList = detectedTag.techList
+            appendLog("NFC", "Intent ${intent.action} tech=${tagTechList.joinToString(",")} id=$tagIdHex")
 
             // Do we still have a bitmap to flash?
             val bitmap = this.mBitmap
             if (bitmap == null) {
-                Log.v("Missing bitmap", "mBitmap = null")
+                appendLog("Missing bitmap", "mBitmap = null")
                 Toast.makeText(this, "Missing bitmap to flash.", Toast.LENGTH_SHORT).show()
                 return
             }
 
             // Check for correct NFC type support
             if (!tagTechList.contains(NfcA::class.java.name)) {
-                Log.v("Invalid tag type. Found:", tagTechList.toString())
+                appendLog("Invalid tag type", tagTechList.toString())
                 Toast.makeText(this, "Unsupported NFC tag tech.", Toast.LENGTH_SHORT).show()
                 return
             }
 
             // Log ID for diagnostics; don't gate on it to avoid false negatives.
             if (tagIdAscii !in WaveShareUIDs && tagIdHex !in WaveShareUIDs) {
-                Log.v("Unknown tag ID", "$tagIdAscii / $tagIdHex not in " + WaveShareUIDs.joinToString(", "))
+                appendLog("Unknown tag ID", "$tagIdAscii / $tagIdHex not in " + WaveShareUIDs.joinToString(", "))
                 Toast.makeText(this, "Unknown tag; attempting flash anyway.", Toast.LENGTH_SHORT).show()
             }
 
@@ -231,19 +239,19 @@ class NfcFlasher : AppCompatActivity() {
                 }
 
                 if (!aarFound) {
-                    Log.v("Bad NDEFs:", "records found, but missing AAR")
+                    appendLog("Bad NDEFs", "records found, but missing AAR")
                     Toast.makeText(this, "NDEF found, missing AAR; attempting flash anyway.", Toast.LENGTH_SHORT).show()
                 }
             }
 
             if (!mIsFlashing) {
                 // Here we go!!!
-                Log.v("Matched!", "Tag is a match! Preparing to flash...")
+                appendLog("Matched!", "Tag is a match! Preparing to flash...")
                 lifecycleScope.launch {
                     flashBitmap(detectedTag, bitmap, screenSizeEnum)
                 }
             } else {
-                Log.v("Not flashing", "Flashing already in progress!")
+                appendLog("Not flashing", "Flashing already in progress!")
             }
         }
     }
@@ -257,6 +265,8 @@ class NfcFlasher : AppCompatActivity() {
         // Override WaveShare's SDK default of 700
         nfcObj.timeout = 1200
         var errorString = ""
+        var initResult = -1
+        var sendResult = -1
 
         val t: Thread = object : Thread() {
             //Create an new thread
@@ -281,9 +291,18 @@ class NfcFlasher : AppCompatActivity() {
                 thread.start() //start the thread
                 tntag = NfcA.get(tag) //Get the tag instance.
                 try {
-                    val whether_succeed: Int = a.a(screenSizeEnum, bitmap) //Send picture
-                    if (whether_succeed == 1) {
-                        success = true
+                    initResult = a.a(nfcObj)
+                    if (initResult != 1) {
+                        errorString = "NFC init failed (code $initResult)"
+                    } else {
+                        sendResult = a.a(screenSizeEnum, bitmap) //Send picture
+                        if (sendResult == 1) {
+                            success = true
+                        } else if (sendResult == 2) {
+                            errorString = "Incorrect image resolution (code $sendResult)"
+                        } else {
+                            errorString = "Write failed (code $sendResult)"
+                        }
                     }
                 } catch (e: IOException) {
                     errorString = e.toString()
@@ -307,13 +326,17 @@ class NfcFlasher : AppCompatActivity() {
                                 }
                                 toast?.show()
                             })
-                            Log.v("Final success val", "Success = $success")
+                            appendLog("Final success val", "Success = $success")
+                            appendLog(
+                                "Flash details",
+                                "init=$initResult send=$sendResult screen=$screenSizeEnum timeout=${nfcObj.timeout} maxTx=${nfcObj.maxTransceiveLength}"
+                            )
                             tntag.close()
                         } catch (e: IOException) { //handle exception error
                             e.printStackTrace()
-                            Log.v("Flashing failed", "See trace above")
+                            appendLog("Flashing failed", "See trace above")
                         }
-                        Log.v("Tag closed", "Setting flash in progress = false")
+                        appendLog("Tag closed", "Setting flash in progress = false")
                         runOnUiThread(Runnable {
                             mIsFlashing = false
                         })
@@ -378,5 +401,28 @@ class NfcFlasher : AppCompatActivity() {
             mProgressBar = findViewById(R.id.nfcFlashProgressbar)
         }
         mProgressBar?.setProgress(updated, true)
+    }
+
+    private fun appendLog(tag: String, message: String) {
+        val timestamp = DateFormat.format("HH:mm:ss", System.currentTimeMillis()).toString()
+        val line = "[$timestamp] $message"
+        if (mLogBuffer.size >= mMaxLogLines) {
+            mLogBuffer.removeFirst()
+        }
+        mLogBuffer.addLast(line)
+        Log.v(tag, message)
+    }
+
+    private fun showLogsDialog() {
+        val logs = if (mLogBuffer.isEmpty()) {
+            "No logs yet."
+        } else {
+            mLogBuffer.joinToString("\n")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("NFC Logs")
+            .setMessage(logs)
+            .setPositiveButton("Close", null)
+            .show()
     }
 }
