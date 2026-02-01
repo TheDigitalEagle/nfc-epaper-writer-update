@@ -9,6 +9,7 @@ import android.net.Uri
 import android.nfc.NdefMessage
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.IsoDep
 import android.nfc.tech.NfcA
 import android.os.Bundle
 import android.os.Build
@@ -19,6 +20,7 @@ import android.os.SystemClock
 import android.text.format.DateFormat
 import android.util.Log
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.Toast
@@ -119,6 +121,7 @@ class NfcFlasher : AppCompatActivity() {
         mWhileFlashingArea  = findViewById(R.id.whileFlashingArea)
         mProgressBar = findViewById(R.id.nfcFlashProgressbar)
         val viewLogsButton: Button = findViewById(R.id.viewLogsButton)
+        val bruteForceCheckbox: CheckBox = findViewById(R.id.bruteForceSizesCheckbox)
         viewLogsButton.setOnClickListener { showLogsDialog() }
 
         val originatingIntent = intent
@@ -188,6 +191,7 @@ class NfcFlasher : AppCompatActivity() {
 
         val preferences = Preferences(this)
         val screenSizeEnum = preferences.getScreenSizeEnum()
+        val bruteForceSizes = bruteForceCheckbox.isChecked
 
         if (intent.action == NfcAdapter.ACTION_NDEF_DISCOVERED || intent.action == NfcAdapter.ACTION_TAG_DISCOVERED || intent.action == NfcAdapter.ACTION_TECH_DISCOVERED) {
             val detectedTag: Tag = intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)!!
@@ -197,6 +201,7 @@ class NfcFlasher : AppCompatActivity() {
             }
             val tagTechList = detectedTag.techList
             appendLog("NFC", "Intent ${intent.action} tech=${tagTechList.joinToString(",")} id=$tagIdHex")
+            logTagDetails(detectedTag)
 
             // Do we still have a bitmap to flash?
             val bitmap = this.mBitmap
@@ -248,7 +253,7 @@ class NfcFlasher : AppCompatActivity() {
                 // Here we go!!!
                 appendLog("Matched!", "Tag is a match! Preparing to flash...")
                 lifecycleScope.launch {
-                    flashBitmap(detectedTag, bitmap, screenSizeEnum)
+                    flashBitmap(detectedTag, bitmap, screenSizeEnum, bruteForceSizes)
                 }
             } else {
                 appendLog("Not flashing", "Flashing already in progress!")
@@ -256,10 +261,11 @@ class NfcFlasher : AppCompatActivity() {
         }
     }
 
-    private suspend fun flashBitmap(tag: Tag, bitmap: Bitmap, screenSizeEnum: Int) {
+    private suspend fun flashBitmap(tag: Tag, bitmap: Bitmap, screenSizeEnum: Int, bruteForceSizes: Boolean) {
         this.mIsFlashing = true
         // val waveShareHandler = WaveShareHandler(this)
         val a = a() // Create a new instance.
+        a.a() // Initialize SDK state (mirrors WaveShareHandler)
         val nfcObj = NfcA.get(tag)
         // Override WaveShare's SDK default of 700
         nfcObj.timeout = 1200
@@ -297,13 +303,32 @@ class NfcFlasher : AppCompatActivity() {
                     if (initResult != 1) {
                         errorString = "NFC init failed (code $initResult)"
                     } else {
-                        sendResult = a.a(screenSizeEnum, bitmap) //Send picture
-                        if (sendResult == 1) {
-                            success = true
-                        } else if (sendResult == 2) {
-                            errorString = "Incorrect image resolution (code $sendResult)"
+                        val sizesToTry: List<Int> = if (bruteForceSizes) {
+                            val allSizes = (1..ScreenSizes.size).toMutableList()
+                            allSizes.remove(screenSizeEnum)
+                            listOf(screenSizeEnum) + allSizes
                         } else {
-                            errorString = "Write failed (code $sendResult)"
+                            listOf(screenSizeEnum)
+                        }
+                        if (bruteForceSizes) {
+                            appendLog("Brute force", "Trying ${sizesToTry.size} sizes")
+                        }
+                        for (sizeEnum in sizesToTry) {
+                            val sizeName = if (sizeEnum in 1..ScreenSizes.size) {
+                                ScreenSizes[sizeEnum - 1]
+                            } else {
+                                "unknown"
+                            }
+                            sendResult = a.a(sizeEnum, bitmap) //Send picture
+                            appendLog("Send attempt", "size=$sizeEnum ($sizeName) result=$sendResult")
+                            if (sendResult == 1) {
+                                success = true
+                                break
+                            } else if (sendResult == 2) {
+                                errorString = "Incorrect image resolution (code $sendResult)"
+                            } else {
+                                errorString = "Write failed (code $sendResult)"
+                            }
                         }
                     }
                 } catch (e: IOException) {
@@ -334,9 +359,14 @@ class NfcFlasher : AppCompatActivity() {
                                 toast?.show()
                             })
                             appendLog("Final success val", "Success = $success")
+                            val screenName = if (screenSizeEnum in 1..ScreenSizes.size) {
+                                ScreenSizes[screenSizeEnum - 1]
+                            } else {
+                                "unknown"
+                            }
                             appendLog(
                                 "Flash details",
-                                "init=$initResult send=$sendResult screen=$screenSizeEnum timeout=${nfcObj.timeout} maxTx=${nfcObj.maxTransceiveLength}"
+                                "init=$initResult send=$sendResult screen=$screenSizeEnum ($screenName) timeout=${nfcObj.timeout} maxTx=${nfcObj.maxTransceiveLength}"
                             )
                             tntag.close()
                         } catch (e: IOException) { //handle exception error
@@ -431,5 +461,29 @@ class NfcFlasher : AppCompatActivity() {
             .setMessage(logs)
             .setPositiveButton("Close", null)
             .show()
+    }
+
+    private fun logTagDetails(tag: Tag) {
+        try {
+            val nfcA = NfcA.get(tag)
+            if (nfcA != null) {
+                appendLog("NfcA details", "atqa=${toHex(nfcA.atqa)} sak=${nfcA.sak}")
+            }
+        } catch (_: Exception) {}
+        try {
+            val isoDep = IsoDep.get(tag)
+            if (isoDep != null) {
+                appendLog(
+                    "IsoDep details",
+                    "historical=${toHex(isoDep.historicalBytes)} hiLayer=${toHex(isoDep.hiLayerResponse)}"
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun toHex(bytes: ByteArray?): String {
+        if (bytes == null) return "null"
+        if (bytes.isEmpty()) return "empty"
+        return bytes.joinToString("") { b -> "%02X".format(b.toInt() and 0xFF) }
     }
 }
