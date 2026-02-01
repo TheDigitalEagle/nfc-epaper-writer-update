@@ -261,7 +261,6 @@ class NfcFlasher : AppCompatActivity() {
         // val waveShareHandler = WaveShareHandler(this)
         val a = a() // Create a new instance.
         val nfcObj = NfcA.get(tag)
-        a.a(nfcObj) // Init
         // Override WaveShare's SDK default of 700
         nfcObj.timeout = 1200
         var errorString = ""
@@ -291,6 +290,9 @@ class NfcFlasher : AppCompatActivity() {
                 thread.start() //start the thread
                 tntag = NfcA.get(tag) //Get the tag instance.
                 try {
+                    if (!nfcObj.isConnected) {
+                        nfcObj.connect()
+                    }
                     initResult = a.a(nfcObj)
                     if (initResult != 1) {
                         errorString = "NFC init failed (code $initResult)"
@@ -305,13 +307,18 @@ class NfcFlasher : AppCompatActivity() {
                         }
                     }
                 } catch (e: IOException) {
-                    errorString = e.toString()
+                    errorString = "IO error: ${e.message ?: e.javaClass.simpleName}"
+                } catch (e: Exception) {
+                    errorString = "Error: ${e.message ?: e.javaClass.simpleName}"
                 } finally {
                         try {
                             // Need to run toast on main thread...
                             runOnUiThread(Runnable {
                                 var toast: Toast? = null
                                 if (!success) {
+                                    if (errorString.isBlank()) {
+                                        errorString = "Unknown failure (init=$initResult send=$sendResult)"
+                                    }
                                     toast = Toast.makeText(
                                         applicationContext,
                                         "FAILED to Flash :( $errorString",
