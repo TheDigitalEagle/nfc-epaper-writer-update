@@ -205,14 +205,10 @@ class NfcFlasher : AppCompatActivity() {
                 return
             }
 
-            // Do an explicit check for the ID. You may need to add the correct ID for your tag model.
-            if (tagIdAscii !in WaveShareUIDs) {
-                Log.v("Invalid tag ID", "$tagIdAscii / $tagIdHex not in " + WaveShareUIDs.joinToString(", "))
-                // Currently, this ID is sometimes coming back corrupted, so it is a unreliable check
-                // only enforce check if type != ndef, because in those cases we can't check AAR
-                if (intent.action != NfcAdapter.ACTION_NDEF_DISCOVERED) {
-                    Toast.makeText(this, "Unrecognized tag; attempting flash anyway.", Toast.LENGTH_SHORT).show()
-                }
+            // Log ID for diagnostics; don't gate on it to avoid false negatives.
+            if (tagIdAscii !in WaveShareUIDs && tagIdHex !in WaveShareUIDs) {
+                Log.v("Unknown tag ID", "$tagIdAscii / $tagIdHex not in " + WaveShareUIDs.joinToString(", "))
+                Toast.makeText(this, "Unknown tag; attempting flash anyway.", Toast.LENGTH_SHORT).show()
             }
 
             // ACTION_NDEF_DISCOVERED has the filter applied for the AAR record *type*,
@@ -236,7 +232,7 @@ class NfcFlasher : AppCompatActivity() {
 
                 if (!aarFound) {
                     Log.v("Bad NDEFs:", "records found, but missing AAR")
-                    Toast.makeText(this, "NDEF found, but missing AAR.", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "NDEF found, missing AAR; attempting flash anyway.", Toast.LENGTH_SHORT).show()
                 }
             }
 

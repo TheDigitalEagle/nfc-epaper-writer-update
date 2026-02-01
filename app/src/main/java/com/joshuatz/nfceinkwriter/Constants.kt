@@ -2,9 +2,11 @@ package com.joshuatz.nfceinkwriter
 
 const val PackageName = "com.joshuatz.nfceinkwriter"
 
+// Known Waveshare tag UIDs (ASCII or hex forms).
 val WaveShareUIDs = arrayOf(
     "WSDZ10m",
-    "FSTN10m" // added for 1.54" B model
+    "FSTN10m", // added for 1.54" B model
+    "46031752" // hex UID example
 )
 
 // Order matches WS SDK Enum (except off by 1, due to zero-index)
